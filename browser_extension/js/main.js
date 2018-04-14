@@ -12,10 +12,15 @@ $(function () {
   var $usernameInput = $('.usernameInput'); // Input for username
   var $messages = $('.messages'); // Messages area
   var $inputMessage = $('.inputMessage'); // Input message input box
+  var roomsShown = 0;
 
   var $loginPage = $('.login.page'); // The login page
   var $chatPage = $('.chat.page'); // The chatroom page
   var $googleSignInButton = $('#btnGoogleSignIn'); // Google login button
+  var $guestSignInButton = $('#btnGuestLogin'); //Guest login button
+  var $guestSignInCheck = $('#btnGuestCheck'); //Guest login button
+  var $guestUser = $('#guestUser'); 
+  var $logout = $('#logout');
 
   var connected = false;
   var typing = false;
@@ -23,7 +28,6 @@ $(function () {
   var $currentInput = $usernameInput.focus();
 
   var socket = io.connect('http://localhost:3000');
-  
   var currentChannel;
 
   // Payload stores the username and channel
@@ -36,6 +40,82 @@ $(function () {
     var url = new URL(tabs[0].url);
     payload.domain = url.hostname;
     currentChannel = payload.domain;
+  });
+
+  chrome.storage.local.get(['UID'], function(result) {
+    if(result.UID) {
+      socket.emit('guestLoginCheck', result.UID)
+    } else {
+    }
+  });
+
+  
+  chrome.tabs.query({'active': true, 'lastFocusedWindow': true}, function (tabs) {
+    var url = new URL(tabs[0].url);
+    payload.domain = url.hostname;
+    currentChannel = payload.domain;
+  });
+
+  // Reveals the guest username input field
+  $guestSignInButton.click(function () {
+    console.log("sign in");
+    var username_ = $guestUser.val();
+    socket.emit('guest',username_);
+  });
+
+  $logout.click(function () {
+
+    chrome.storage.local.get(['UID'], function(result) {
+      if(result.UID) {
+        payload.username = null;
+        socket.emit("logout",result.UID);
+      }
+    });
+
+    chrome.storage.local.clear();
+  });
+
+  socket.on('guestSuccess', function (data) {
+    console.info("Setting unique key " + data);
+    chrome.storage.local.set({UID: data }, function() {
+      
+    });
+
+    chrome.storage.local.get(['UID'], function(result) {
+      if(result.UID) {
+        socket.emit('guestLoginCheck', result.UID)
+      } 
+    });
+
+  });
+
+  socket.on('guestFailure', function (data) {
+    //show login
+  });
+
+  //TODO: Allow user to revoke their username
+  socket.on('guestCheckSuccess', function (username) {
+    console.info("This user is logged in " + username);
+    payload.username = username;
+    if (username) {
+      console.log("User logged in");
+      $loginPage.fadeOut();
+      $chatPage.show();
+      $loginPage.off('click');
+      $currentInput = $inputMessage.focus();
+      setUsername(); // Tell server to set username
+    }
+  });  
+
+  // Reveals the guest username input field
+  $guestSignInCheck.click(function () {
+    console.info("guest Check");
+   
+     chrome.storage.local.get(['UID'], function(result) {
+       if(result.UID) {
+         socket.emit('guestLoginCheck', result.UID)
+       }
+     });
   });
 
   function loginGoogleUser() {
@@ -73,16 +153,6 @@ $(function () {
     });
   }
 
-  function addParticipantsMessage(data) {
-    var message = '';
-    if (data.numUsers === 1) {
-      message += "there's 1 participant";
-    } else {
-      message += "there are " + data.numUsers + " participants";
-    }
-    log(message);
-  }
-
   // Sets the client's username
   function setUsername() {
 
@@ -99,9 +169,9 @@ $(function () {
         $currentInput = $inputMessage.focus();
 		$("#chat_name").text(currentChannel);
         // Tell the server your username
-        socket.emit('add user', payload);
       }
     });
+    socket.emit('add user', payload);
   }
 
   // Sends a chat message
@@ -113,6 +183,7 @@ $(function () {
     // if there is a non-empty message and a socket connection
     if (message && connected) {
       $inputMessage.val('');
+      // send users UID to server to send back right username
       addChatMessage({
         username: payload.username,
         message: message
@@ -281,9 +352,7 @@ $(function () {
         socket.emit('stop typing');
         typing = false;
         sendMessage();
-      } else {
-        setUsername();
-      }
+      } 
     }
   });
 
@@ -326,6 +395,33 @@ $(function () {
     }
   });
 
+  $( "#userOpenChats" ).hover(
+    function() {
+      console.log("Hovered");
+
+      $(".channelHidden").stop(true,true).slideDown();
+    }, function() {
+      $(".channelHidden").stop(true,true).slideUp();
+    }
+  );
+  
+  //handle clicking channels in the channel box
+  $("div").on("click", ".changechannel", function(e){
+	e.preventDefault();
+	if (currentChannel != e.currentTarget.innerHTML){
+		var oldChannel;
+		if (currentChannel != payload.domain){ //you will leave old channel unless old channel is your current room since that affects other tabs
+			oldChannel = currentChannel;
+		}
+		currentChannel = e.currentTarget.innerHTML;
+		$("#chat_name").text(currentChannel);
+		socket.emit("viewChannel", {
+			oldChannel: oldChannel,
+			room: currentChannel
+		});
+    }
+  });
+
   // Socket events
 
   // Whenever the server emits 'login', log the login message
@@ -347,19 +443,26 @@ $(function () {
   });
 
   socket.on("updateUsers", function(data) {
+
 	if (data.room == currentChannel) {
 		$("#onlineUserList").html(""); //This is being called and clearing the list because data is not null
 		for (var key in data.usernames) {
 	      //add the user to the list of online users
-		  $("#onlineUserList").append("<li class='userOnline'>" + key + "</li>");
+		  $("#onlineUserList").append("<li class='userOnline' style='color: white;'>" + key + "</li>");
 		}
 	}
   });
   
   socket.on("updateRooms",function(data){
 	  if (data != null && data.disconnectFlag == undefined){
-		$("#userOpenChats").append("<li class='userOnline'><a href='' class='changechannel' value='"+data.room+"'>"+data.room+"</div></li>");
-	  }
+      if(roomsShown < 5) {
+		    $("#userOpenChats").append("<li class='userOnline'><a href='' class='changechannel' value='"+data.room+"'>"+data.room+"</div></li>");
+      } else if(roomsShown > 5) {
+        $("#userOpenChats").append("<li class='userOnline channelHidden' style='display:none'><a href='' class='changechannel' value='"+data.room+"'>"+data.room+"</div></li>");
+      }
+      console.log("Rooms shown " + roomsShown);
+        roomsShown = roomsShown + 1;
+    }
 	  else if (data.disconnectFlag == true){
 		var liRooms = document.getElementsByClassName("userOnline");
 		for (var i = 0; i < liRooms.length; i++) {
@@ -418,5 +521,4 @@ $(function () {
   socket.on('reconnect_error', function () {
     log('attempt to reconnect has failed');
   });
-
 });
